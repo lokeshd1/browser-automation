@@ -25,6 +25,12 @@ Examples:
   # Using local Ollama
   browser-agent "Take a screenshot" --provider ollama --model llava
 
+  # Non-vision mode (works with any LLM, lower cost)
+  browser-agent "Click the login button" --url https://example.com --no-vision
+
+  # Non-vision mode with text-only Ollama model
+  browser-agent "Fill the search form" --provider ollama --model llama3 --no-vision
+
   # With all options
   browser-agent "Fill the form with name John" \\
     --url https://example.com \\
@@ -97,6 +103,12 @@ Supported Providers:
     )
 
     parser.add_argument(
+        "--no-vision",
+        action="store_true",
+        help="Disable vision mode, use DOM context only (works with any LLM, reduces cost)",
+    )
+
+    parser.add_argument(
         "--version", "-v",
         action="store_true",
         help="Show version and exit",
@@ -124,6 +136,9 @@ Supported Providers:
     config.headless = args.headless
     config.screenshot_dir = args.screenshot_dir
     config.verbose = not args.quiet
+
+    if args.no_vision:
+        config.use_vision = False
 
     if args.model:
         config.model = args.model

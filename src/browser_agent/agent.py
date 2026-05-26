@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 from playwright.sync_api import sync_playwright
 
-from .actions import SYSTEM_PROMPT, execute_action, get_page_context
+from .actions import SYSTEM_PROMPT, SYSTEM_PROMPT_NO_VISION, execute_action, get_page_context
 from .config import Config
 from .providers import get_provider, BaseLLMProvider
 
@@ -55,8 +55,11 @@ class BrowserAgent:
 
         if self.config.verbose:
             print(f"Using provider: {self._provider.name} (model: {self.config.model})")
-            if not self._provider.supports_vision:
-                print("Warning: This model doesn't support vision. Results may be limited.")
+            if self.config.use_vision:
+                if not self._provider.supports_vision:
+                    print("Warning: This model doesn't support vision. Results may be limited.")
+            else:
+                print("Vision disabled: using DOM context only")
 
     def _screenshot_to_base64(self, page: Any) -> str:
         """Capture screenshot and convert to base64."""
@@ -73,12 +76,16 @@ class BrowserAgent:
         # Add context to history
         messages = history + [{"role": "user", "content": context_msg}]
 
+        # Choose system prompt based on vision mode
+        system_prompt = SYSTEM_PROMPT if self.config.use_vision else SYSTEM_PROMPT_NO_VISION
+
         # Get response from provider
         response_text = self._provider.ask(
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             messages=messages,
             screenshot_b64=screenshot_b64,
             max_tokens=1024,
+            use_vision=self.config.use_vision,
         )
 
         # Parse JSON from response
@@ -150,7 +157,8 @@ class BrowserAgent:
                         break
 
                     # Capture current state
-                    screenshot_b64 = self._screenshot_to_base64(page)
+                    # Skip screenshot capture if vision is disabled (performance optimization)
+                    screenshot_b64 = self._screenshot_to_base64(page) if self.config.use_vision else ""
                     page_context = get_page_context(page)
 
                     if self.config.verbose:
@@ -212,6 +220,7 @@ def run_agent(
     provider: str = None,
     model: str = None,
     api_key: str = None,
+    use_vision: bool = True,
 ) -> dict:
     """
     Convenience function to run the browser agent.
@@ -227,6 +236,7 @@ def run_agent(
         provider: LLM provider ('anthropic', 'openai', 'ollama')
         model: Model name (provider-specific)
         api_key: API key (overrides environment)
+        use_vision: Whether to use vision mode (default: True). Set to False for DOM-only mode.
 
     Returns:
         Dictionary with 'success', 'result', 'steps', and optionally 'error'
@@ -236,6 +246,7 @@ def run_agent(
     config.headless = headless
     config.screenshot_dir = screenshot_dir
     config.verbose = verbose
+    config.use_vision = use_vision
 
     if model:
         config.model = model

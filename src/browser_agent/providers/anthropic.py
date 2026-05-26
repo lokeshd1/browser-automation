@@ -65,28 +65,38 @@ class AnthropicProvider(BaseLLMProvider):
         messages: list,
         screenshot_b64: str,
         max_tokens: int = 1024,
+        use_vision: bool = True,
     ) -> str:
         """Send request to Claude."""
-        # Build the message with image
-        formatted_messages = messages + [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "What action should I take next based on this screenshot?",
-                    },
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/png",
-                            "data": screenshot_b64,
+        # Build the message - with or without image based on use_vision
+        if use_vision and screenshot_b64:
+            formatted_messages = messages + [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "What action should I take next based on this screenshot?",
                         },
-                    },
-                ],
-            }
-        ]
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": screenshot_b64,
+                            },
+                        },
+                    ],
+                }
+            ]
+        else:
+            # Non-vision mode: use DOM context only
+            formatted_messages = messages + [
+                {
+                    "role": "user",
+                    "content": "What action should I take next based on the page context provided above?",
+                }
+            ]
 
         if self.use_enterprise:
             response = httpx.post(

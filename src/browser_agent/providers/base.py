@@ -28,6 +28,7 @@ class BaseLLMProvider(ABC):
         messages: list,
         screenshot_b64: str,
         max_tokens: int = 1024,
+        use_vision: bool = True,
     ) -> str:
         """
         Send a request to the LLM.
@@ -37,6 +38,7 @@ class BaseLLMProvider(ABC):
             messages: Conversation history
             screenshot_b64: Base64-encoded screenshot image
             max_tokens: Maximum tokens in response
+            use_vision: Whether to include the screenshot (False for DOM-only mode)
 
         Returns:
             Model's text response

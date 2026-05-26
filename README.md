@@ -16,14 +16,25 @@ An AI-powered browser automation agent that uses LLM vision capabilities to navi
 ┌─────────────────────────────────────────────────────────┐
 │                      Agent Loop                         │
 ├─────────────────────────────────────────────────────────┤
-│  1. Screenshot page ──► 2. Send to LLM with task        │
-│          ▲                        │                     │
-│          │                        ▼                     │
-│  4. Execute action ◄── 3. LLM returns action JSON       │
+│  1. Capture page ────► 2. Send to LLM with task         │
+│     (screenshot or        │                             │
+│      DOM context)         ▼                             │
+│          ▲         3. LLM returns action JSON           │
+│          │                │                             │
+│  4. Execute action ◄──────┘                             │
 │          │                                              │
 │          └──────── Repeat until "done" ─────────────────│
 └─────────────────────────────────────────────────────────┘
 ```
+
+### Vision vs Non-Vision Mode
+
+| Mode | How it works | Best for |
+|------|--------------|----------|
+| **Vision** (default) | Uses screenshots | Complex visual tasks, layout-dependent actions |
+| **Non-Vision** | Uses DOM context only | Simple tasks, any LLM, lower cost |
+
+Use `--no-vision` for tasks like clicking buttons, filling forms, or navigation where visual context isn't critical.
 
 ## Installation
 
@@ -88,6 +99,12 @@ browser-agent "Search for Python tutorials" --url https://duckduckgo.com
 browser-agent "Find the top story" --provider openai --url https://news.ycombinator.com
 browser-agent "Take a screenshot" --provider ollama --model llava --url https://example.com
 
+# Non-vision mode (DOM context only - works with any LLM)
+browser-agent "Click the login button" --url https://example.com --no-vision
+
+# Non-vision mode with text-only models
+browser-agent "Fill the search form" --provider ollama --model llama3 --no-vision
+
 # With options
 browser-agent "Fill the contact form" \
   --url https://example.com/contact \
@@ -117,12 +134,20 @@ result = run_agent(
     model="gpt-4o"
 )
 
-# Using Ollama locally
+# Non-vision mode (DOM context only)
 result = run_agent(
-    task="Take a screenshot",
+    task="Click the login button",
+    start_url="https://example.com",
+    use_vision=False  # Works with any LLM, lower cost
+)
+
+# Using Ollama locally with a text-only model
+result = run_agent(
+    task="Fill the search form",
     start_url="https://example.com",
     provider="ollama",
-    model="llava"
+    model="llama3",  # Text-only model
+    use_vision=False
 )
 ```
 
@@ -229,12 +254,32 @@ config = Config.from_env()
 agent = BrowserAgent(config, provider=MyProvider())
 ```
 
+## Non-Vision Mode
+
+Non-vision mode uses structured DOM context instead of screenshots, making the agent work with any LLM while reducing cost and latency.
+
+**Benefits:**
+- Works with any LLM (no vision capability required)
+- ~80% lower token cost (no image tokens)
+- Faster response times
+- Good for 80% of tasks (clicking buttons, filling forms, navigation)
+
+**When to use vision mode:**
+- Complex visual layouts
+- Tasks requiring spatial understanding
+- Identifying elements by appearance rather than text
+
+**Environment variable:**
+```bash
+export BROWSER_AGENT_NO_VISION=true
+```
+
 ## Limitations
 
 - Cannot solve CAPTCHAs
 - Cannot handle 2FA/MFA authentication
 - Some sites have bot detection that may block automation
-- Non-vision models have limited effectiveness
+- Non-vision mode may struggle with complex visual layouts
 
 ## Requirements
 

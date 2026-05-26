@@ -59,6 +59,7 @@ class OllamaProvider(BaseLLMProvider):
         messages: list,
         screenshot_b64: str,
         max_tokens: int = 1024,
+        use_vision: bool = True,
     ) -> str:
         """Send request to Ollama."""
         # Build prompt from messages
@@ -69,7 +70,12 @@ class OllamaProvider(BaseLLMProvider):
             content = msg["content"]
             prompt_parts.append(f"{role}: {content}")
 
-        prompt_parts.append("What action should I take next based on this screenshot?")
+        # Adjust prompt based on vision mode
+        if use_vision and self.supports_vision and screenshot_b64:
+            prompt_parts.append("What action should I take next based on this screenshot?")
+        else:
+            prompt_parts.append("What action should I take next based on the page context provided above?")
+
         prompt = "\n".join(prompt_parts)
 
         # Build request
@@ -82,8 +88,8 @@ class OllamaProvider(BaseLLMProvider):
             },
         }
 
-        # Add image if model supports vision
-        if self.supports_vision:
+        # Add image only if vision mode is enabled and model supports it
+        if use_vision and self.supports_vision and screenshot_b64:
             request_data["images"] = [screenshot_b64]
 
         response = httpx.post(

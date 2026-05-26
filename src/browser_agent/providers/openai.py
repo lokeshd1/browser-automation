@@ -66,6 +66,7 @@ class OpenAIProvider(BaseLLMProvider):
         messages: list,
         screenshot_b64: str,
         max_tokens: int = 1024,
+        use_vision: bool = True,
     ) -> str:
         """Send request to OpenAI."""
         # Convert messages to OpenAI format
@@ -77,8 +78,8 @@ class OpenAIProvider(BaseLLMProvider):
                 "content": msg["content"],
             })
 
-        # Add the current request with image
-        if self.supports_vision:
+        # Add the current request - with or without image based on use_vision
+        if use_vision and self.supports_vision and screenshot_b64:
             openai_messages.append({
                 "role": "user",
                 "content": [
@@ -96,12 +97,10 @@ class OpenAIProvider(BaseLLMProvider):
                 ],
             })
         else:
+            # Non-vision mode or model doesn't support vision
             openai_messages.append({
                 "role": "user",
-                "content": (
-                    "What action should I take next? "
-                    "(Note: This model doesn't support images, using page context only)"
-                ),
+                "content": "What action should I take next based on the page context provided above?",
             })
 
         response = httpx.post(

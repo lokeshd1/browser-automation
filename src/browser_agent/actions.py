@@ -67,6 +67,76 @@ Rules:
 """
 
 
+# System prompt for non-vision mode (DOM context only)
+SYSTEM_PROMPT_NO_VISION = """You are a browser automation agent. You receive structured page context (DOM elements) and decide what action to take next.
+
+Available actions (respond with JSON):
+
+NAVIGATION:
+- {"action": "goto", "url": "https://..."}
+- {"action": "back"} - Go back in browser history
+- {"action": "forward"} - Go forward in browser history
+- {"action": "refresh"} - Reload the current page
+
+MOUSE ACTIONS:
+- {"action": "click", "selector": "CSS selector"}
+- {"action": "double_click", "selector": "CSS selector"}
+- {"action": "right_click", "selector": "CSS selector"}
+- {"action": "hover", "selector": "CSS selector"} - Hover over element (useful for dropdowns/menus)
+
+FORM INPUTS:
+- {"action": "fill", "selector": "CSS selector", "value": "text to type"}
+- {"action": "clear", "selector": "CSS selector"} - Clear an input field
+- {"action": "select", "selector": "CSS selector", "value": "option value or label"} - Select dropdown option
+- {"action": "check", "selector": "CSS selector"} - Check a checkbox
+- {"action": "uncheck", "selector": "CSS selector"} - Uncheck a checkbox
+- {"action": "upload", "selector": "CSS selector", "filepath": "/path/to/file"} - Upload a file
+
+KEYBOARD:
+- {"action": "press", "key": "Enter|Tab|Escape|ArrowDown|ArrowUp|Space|Backspace|Delete|a|b|..."} - Press a key
+- {"action": "press", "key": "Control+a"} - Key combination (use Control, Shift, Alt, Meta)
+- {"action": "type", "text": "text to type"} - Type text without targeting specific element
+
+SCROLLING:
+- {"action": "scroll", "direction": "down|up", "amount": 500} - Scroll by pixels (default 500)
+- {"action": "scroll_to", "selector": "CSS selector"} - Scroll element into view
+
+DATA EXTRACTION:
+- {"action": "extract", "selector": "CSS selector", "description": "what to extract"}
+- {"action": "get_attribute", "selector": "CSS selector", "attribute": "href|src|value|..."}
+- {"action": "get_text", "selector": "CSS selector"} - Get text content of element
+
+WAITING:
+- {"action": "wait", "selector": "CSS selector", "timeout": 5000} - Wait for element to appear
+- {"action": "wait_hidden", "selector": "CSS selector", "timeout": 5000} - Wait for element to disappear
+- {"action": "sleep", "ms": 1000} - Wait for specified milliseconds
+
+UTILITIES:
+- {"action": "screenshot", "filename": "screenshot.png"} - Save screenshot to file
+- {"action": "focus", "selector": "CSS selector"} - Focus on an element
+
+COMPLETION:
+- {"action": "done", "result": "summary of what was accomplished"}
+
+Rules:
+1. Analyze the page_context structure carefully - it contains all interactive elements
+2. Use specific CSS selectors (prefer IDs, then data attributes, then classes, then tag names)
+3. Take one action at a time
+4. Say "done" when the task is complete or impossible
+5. Respond ONLY with valid JSON, no other text
+6. For form submission, try clicking submit button first; use press Enter as fallback
+7. When hovering reveals a menu, follow up with a click on the revealed item
+
+Tips for building selectors from context:
+- If element has 'id', use: #element-id
+- If element has unique 'data-*' attribute, use: [data-testid="value"]
+- If element has 'class', use: .class-name (combine multiple: .class1.class2)
+- For buttons/links, combine tag with text: button:has-text("Submit"), a:has-text("Click here")
+- For inputs, use: input[name="fieldname"], input[placeholder="Search..."]
+- For navigation items, look at 'nav_items' section for menu structure
+"""
+
+
 def execute_action(page: Any, action: dict, screenshot_dir: str = None, timeout: int = 5000) -> str:
     """
     Execute a browser action.
@@ -222,7 +292,7 @@ def execute_action(page: Any, action: dict, screenshot_dir: str = None, timeout:
 
 def get_page_context(page: Any) -> dict:
     """
-    Extract useful context from the page for Claude.
+    Extract useful context from the page for the LLM.
 
     Args:
         page: Playwright page object
@@ -231,48 +301,164 @@ def get_page_context(page: Any) -> dict:
         Dictionary with page context information
     """
     return page.evaluate("""() => {
+        const viewportHeight = window.innerHeight;
+        const scrollY = window.scrollY;
+
+        // Helper to check if element is above/below fold
+        const getPosition = (el) => {
+            const rect = el.getBoundingClientRect();
+            if (rect.top < 0) return 'above';
+            if (rect.top > viewportHeight) return 'below';
+            return 'visible';
+        };
+
+        // Helper to get ARIA attributes
+        const getAria = (el) => {
+            const aria = {};
+            if (el.getAttribute('aria-label')) aria.label = el.getAttribute('aria-label');
+            if (el.getAttribute('aria-describedby')) {
+                const desc = document.getElementById(el.getAttribute('aria-describedby'));
+                if (desc) aria.description = desc.textContent?.trim();
+            }
+            if (el.getAttribute('role')) aria.role = el.getAttribute('role');
+            if (el.getAttribute('aria-expanded')) aria.expanded = el.getAttribute('aria-expanded');
+            if (el.getAttribute('aria-selected')) aria.selected = el.getAttribute('aria-selected');
+            if (el.getAttribute('aria-disabled')) aria.disabled = el.getAttribute('aria-disabled');
+            return Object.keys(aria).length > 0 ? aria : null;
+        };
+
+        // Helper to get useful data attributes
+        const getDataAttrs = (el) => {
+            const data = {};
+            for (const attr of el.attributes) {
+                if (attr.name.startsWith('data-') &&
+                    ['data-testid', 'data-test', 'data-cy', 'data-id', 'data-action', 'data-value'].some(d => attr.name.startsWith(d.slice(0, -1)))) {
+                    data[attr.name] = attr.value;
+                }
+            }
+            return Object.keys(data).length > 0 ? data : null;
+        };
+
         return {
             url: window.location.href,
             title: document.title,
-            buttons: Array.from(document.querySelectorAll('button, [role="button"]'))
-                .slice(0, 10).map(b => ({
-                    text: b.textContent?.trim(),
+
+            // Headings hierarchy for page structure understanding
+            headings: Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6'))
+                .slice(0, 15).map(h => ({
+                    level: parseInt(h.tagName[1]),
+                    text: h.textContent?.trim().slice(0, 100),
+                    id: h.id || null
+                })).filter(h => h.text),
+
+            // Buttons with enhanced info
+            buttons: Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"], input[type="button"]'))
+                .slice(0, 20).map(b => ({
+                    text: b.textContent?.trim().slice(0, 50) || b.value || null,
                     id: b.id || null,
-                    class: b.className || null
-                })).filter(b => b.text),
-            links: Array.from(document.querySelectorAll('a'))
-                .slice(0, 10).map(a => ({
-                    text: a.textContent?.trim(),
+                    class: b.className?.split(' ').slice(0, 3).join(' ') || null,
+                    type: b.type || null,
+                    disabled: b.disabled || null,
+                    position: getPosition(b),
+                    aria: getAria(b),
+                    data: getDataAttrs(b)
+                })).filter(b => b.text || b.aria?.label),
+
+            // Links with enhanced info
+            links: Array.from(document.querySelectorAll('a[href]'))
+                .slice(0, 20).map(a => ({
+                    text: a.textContent?.trim().slice(0, 50),
                     href: a.href,
-                    id: a.id || null
-                })).filter(l => l.text),
-            inputs: Array.from(document.querySelectorAll('input, textarea'))
-                .slice(0, 10).map(i => ({
+                    id: a.id || null,
+                    class: a.className?.split(' ').slice(0, 3).join(' ') || null,
+                    position: getPosition(a),
+                    aria: getAria(a),
+                    data: getDataAttrs(a)
+                })).filter(l => l.text || l.aria?.label),
+
+            // Form inputs with enhanced info
+            inputs: Array.from(document.querySelectorAll('input:not([type="hidden"]), textarea'))
+                .slice(0, 20).map(i => ({
                     type: i.type,
                     name: i.name || null,
                     id: i.id || null,
                     placeholder: i.placeholder || null,
-                    value: i.type !== 'password' ? i.value : '[hidden]'
+                    value: i.type !== 'password' ? (i.value?.slice(0, 50) || null) : '[hidden]',
+                    required: i.required || null,
+                    disabled: i.disabled || null,
+                    position: getPosition(i),
+                    aria: getAria(i),
+                    data: getDataAttrs(i),
+                    label: i.id ? document.querySelector(`label[for="${i.id}"]`)?.textContent?.trim() : null
                 })),
+
+            // Select dropdowns
             selects: Array.from(document.querySelectorAll('select'))
-                .slice(0, 10).map(s => ({
+                .slice(0, 15).map(s => ({
                     name: s.name || null,
                     id: s.id || null,
-                    options: Array.from(s.options).slice(0, 5).map(o => o.text),
-                    selected: s.options[s.selectedIndex]?.text
+                    options: Array.from(s.options).slice(0, 8).map(o => ({ value: o.value, text: o.text })),
+                    selected: s.options[s.selectedIndex]?.text,
+                    disabled: s.disabled || null,
+                    position: getPosition(s),
+                    aria: getAria(s),
+                    label: s.id ? document.querySelector(`label[for="${s.id}"]`)?.textContent?.trim() : null
                 })),
-            checkboxes: Array.from(document.querySelectorAll('input[type="checkbox"]'))
-                .slice(0, 10).map(c => ({
+
+            // Checkboxes and radios
+            checkboxes: Array.from(document.querySelectorAll('input[type="checkbox"], input[type="radio"]'))
+                .slice(0, 15).map(c => ({
+                    type: c.type,
                     name: c.name || null,
                     id: c.id || null,
+                    value: c.value || null,
                     checked: c.checked,
-                    label: document.querySelector(`label[for="${c.id}"]`)?.textContent?.trim()
+                    disabled: c.disabled || null,
+                    label: c.id ? document.querySelector(`label[for="${c.id}"]`)?.textContent?.trim() :
+                           c.closest('label')?.textContent?.trim()
                 })),
+
+            // Forms
             forms: Array.from(document.querySelectorAll('form'))
                 .slice(0, 5).map(f => ({
                     id: f.id || null,
+                    name: f.name || null,
                     action: f.action,
                     method: f.method
-                }))
+                })),
+
+            // Navigation elements
+            nav_items: Array.from(document.querySelectorAll('nav a, [role="navigation"] a, [role="menuitem"], [role="menu"] a'))
+                .slice(0, 15).map(n => ({
+                    text: n.textContent?.trim().slice(0, 30),
+                    href: n.href || null,
+                    aria: getAria(n)
+                })).filter(n => n.text),
+
+            // Images with alt text (helpful for understanding page content)
+            images: Array.from(document.querySelectorAll('img[alt]'))
+                .slice(0, 10).map(img => ({
+                    alt: img.alt?.slice(0, 100),
+                    id: img.id || null,
+                    class: img.className?.split(' ').slice(0, 2).join(' ') || null
+                })).filter(img => img.alt),
+
+            // Main content area text (truncated)
+            main_text: (() => {
+                const main = document.querySelector('main, [role="main"], article, .content, #content');
+                if (main) {
+                    return main.textContent?.trim().slice(0, 500).replace(/\\s+/g, ' ');
+                }
+                return null;
+            })(),
+
+            // Page scroll info
+            scroll: {
+                position: scrollY,
+                height: document.body.scrollHeight,
+                viewport: viewportHeight,
+                can_scroll_down: (scrollY + viewportHeight) < document.body.scrollHeight,
+                can_scroll_up: scrollY > 0
+            }
         }
     }""")

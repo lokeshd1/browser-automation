@@ -30,6 +30,9 @@ class Config:
     step_delay_ms: int = 1000
     action_timeout_ms: int = 5000
 
+    # Vision Configuration
+    use_vision: bool = True  # Set to False to use DOM context only (works with any LLM)
+
     # Output Configuration
     screenshot_dir: Optional[str] = None
     verbose: bool = True
@@ -70,6 +73,11 @@ class Config:
         elif provider == "ollama":
             config.base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
             config.model = os.environ.get("OLLAMA_MODEL", "llava")
+
+        # Check for no-vision mode environment variable
+        no_vision = os.environ.get("BROWSER_AGENT_NO_VISION", "").lower()
+        if no_vision in ("1", "true", "yes"):
+            config.use_vision = False
 
         return config
 
