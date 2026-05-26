@@ -1,4 +1,4 @@
-# Browser Automation Agent
+# Browser Agent
 
 An AI-powered browser automation agent that uses Claude's vision capabilities to navigate websites, fill forms, and perform web tasks using natural language instructions.
 
@@ -19,22 +19,9 @@ An AI-powered browser automation agent that uses Claude's vision capabilities to
 
 The agent takes a screenshot of the current page, sends it to Claude along with your task description, and Claude decides what action to take next. This continues until the task is complete.
 
-## Features
-
-### Supported Actions
-
-| Category | Actions |
-|----------|---------|
-| **Navigation** | `goto`, `back`, `forward`, `refresh` |
-| **Mouse** | `click`, `double_click`, `right_click`, `hover` |
-| **Forms** | `fill`, `clear`, `select` (dropdowns), `check`, `uncheck`, `upload` |
-| **Keyboard** | `press` (keys/combos), `type` |
-| **Scrolling** | `scroll`, `scroll_to` |
-| **Data Extraction** | `extract`, `get_attribute`, `get_text` |
-| **Waiting** | `wait`, `wait_hidden`, `sleep` |
-| **Utilities** | `screenshot`, `focus` |
-
 ## Installation
+
+### From Source
 
 ```bash
 # Clone the repository
@@ -45,22 +32,35 @@ cd browser-automation
 python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Install dependencies
-pip install -r requirements.txt
+# Install in development mode
+pip install -e .
 
-# Install browser
+# Install Playwright browser
+playwright install chromium
+```
+
+### Quick Install
+
+```bash
+pip install -e git+https://github.com/lokeshd1/browser-automation.git#egg=browser-agent
 playwright install chromium
 ```
 
 ## Configuration
 
-### Standard Anthropic API
+Copy `.env.example` to `.env` and configure your API credentials:
+
+```bash
+cp .env.example .env
+```
+
+### Option 1: Standard Anthropic API
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
-### Enterprise Bedrock Endpoint
+### Option 2: Enterprise Bedrock Endpoint
 
 ```bash
 export ANTHROPIC_BEDROCK_BASE_URL="https://your-endpoint.com/v1"
@@ -68,93 +68,134 @@ export ANTHROPIC_AUTH_TOKEN="your-token"
 export ANTHROPIC_DEFAULT_SONNET_MODEL="your-model-id"
 ```
 
-The agent automatically detects which authentication method to use.
-
 ## Usage
 
 ### Command Line
 
 ```bash
-# Activate virtual environment
-source venv/bin/activate
+# Basic usage
+browser-agent "Search for Python tutorials on DuckDuckGo"
 
-# Run with a custom task
-python ai_browser_agent.py "Search for Python tutorials on Google"
+# With starting URL
+browser-agent "Find the top story" --url https://news.ycombinator.com
+
+# Headless mode (no browser window)
+browser-agent "Take a screenshot of the homepage" --url https://example.com --headless
+
+# Save screenshots
+browser-agent "Click the first article and screenshot it" --screenshot-dir ./shots
+
+# Custom viewport
+browser-agent "Check mobile layout" --url https://example.com --viewport 375x812
+
+# All options
+browser-agent "Fill the contact form" \
+  --url https://example.com/contact \
+  --max-steps 15 \
+  --headless \
+  --screenshot-dir ./screenshots \
+  --viewport 1920x1080
 ```
 
-### Python Script
+### Python API
+
+#### Simple Usage
 
 ```python
-from ai_browser_agent import run_agent
+from browser_agent import run_agent
 
-# Simple task
 result = run_agent(
     task="Go to Hacker News and find the top story title",
     start_url="https://news.ycombinator.com"
 )
 
-print(result["result"])
+print(result["success"])  # True/False
+print(result["result"])   # Task result summary
 ```
 
-### Advanced Options
+#### Advanced Usage
 
 ```python
-result = run_agent(
-    task="Fill out the contact form with name 'John Doe' and email 'john@example.com'",
-    start_url="https://example.com/contact",
-    max_steps=15,              # Maximum actions before stopping
-    headless=True,             # Run without visible browser
-    screenshot_dir="./shots",  # Save screenshots here
-    viewport={"width": 1920, "height": 1080}
+from browser_agent import BrowserAgent, Config
+
+# Custom configuration
+config = Config.from_env()
+config.max_steps = 15
+config.headless = True
+config.screenshot_dir = "./screenshots"
+config.viewport_width = 1920
+config.viewport_height = 1080
+
+# Initialize agent
+agent = BrowserAgent(config)
+
+# Run task
+result = agent.run(
+    task="Fill the form with name 'John Doe' and submit",
+    start_url="https://example.com/form"
 )
+
+# Access results
+print(f"Success: {result.success}")
+print(f"Result: {result.result}")
+print(f"Steps: {len(result.steps)}")
+
+# Inspect individual steps
+for step in result.steps:
+    print(f"  Action: {step['action']}")
+    print(f"  Result: {step['result']}")
 ```
+
+## Supported Actions
+
+| Category | Actions |
+|----------|---------|
+| **Navigation** | `goto`, `back`, `forward`, `refresh` |
+| **Mouse** | `click`, `double_click`, `right_click`, `hover` |
+| **Forms** | `fill`, `clear`, `select`, `check`, `uncheck`, `upload` |
+| **Keyboard** | `press`, `type` |
+| **Scrolling** | `scroll`, `scroll_to` |
+| **Data** | `extract`, `get_attribute`, `get_text` |
+| **Waiting** | `wait`, `wait_hidden`, `sleep` |
+| **Utilities** | `screenshot`, `focus` |
 
 ## Examples
 
-### Search and Extract
+See the `examples/` directory for complete examples:
 
-```python
-run_agent(
-    task="Search for 'playwright python' and tell me the first result",
-    start_url="https://duckduckgo.com"
-)
+- `search_example.py` - Search and extract results
+- `news_example.py` - Navigate and take screenshots
+- `form_example.py` - Fill out forms
+- `simple_playwright.py` - Basic Playwright without AI
+
+Run an example:
+
+```bash
+cd examples
+python search_example.py
 ```
 
-### Form Filling
+## Project Structure
 
-```python
-run_agent(
-    task="Fill the form with name 'Jane Smith', select 'Support' from the dropdown, and submit",
-    start_url="https://example.com/form"
-)
 ```
-
-### Navigation and Screenshots
-
-```python
-run_agent(
-    task="Click on the first article, scroll down, and take a screenshot named 'article.png'",
-    start_url="https://news.ycombinator.com",
-    screenshot_dir="./screenshots"
-)
+browser-automation/
+├── src/
+│   └── browser_agent/
+│       ├── __init__.py      # Package exports
+│       ├── agent.py         # Main BrowserAgent class
+│       ├── actions.py       # Action definitions and execution
+│       ├── config.py        # Configuration management
+│       └── cli.py           # Command-line interface
+├── examples/
+│   ├── search_example.py
+│   ├── news_example.py
+│   ├── form_example.py
+│   └── simple_playwright.py
+├── pyproject.toml           # Package configuration
+├── requirements.txt         # Dependencies
+├── .env.example             # Example environment config
+└── README.md
 ```
-
-### Keyboard Shortcuts
-
-```python
-run_agent(
-    task="Press Ctrl+F to open search, type 'installation', then press Escape",
-    start_url="https://docs.python.org"
-)
-```
-
-## Files
-
-| File | Description |
-|------|-------------|
-| `ai_browser_agent.py` | Main AI agent with Claude integration |
-| `example_browser_automation.py` | Simple Playwright example (no AI) |
-| `requirements.txt` | Python dependencies |
 
 ## Limitations
 
