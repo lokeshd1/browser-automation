@@ -1,6 +1,14 @@
 # Browser Agent
 
-An AI-powered browser automation agent that uses Claude's vision capabilities to navigate websites, fill forms, and perform web tasks using natural language instructions.
+An AI-powered browser automation agent that uses LLM vision capabilities to navigate websites, fill forms, and perform web tasks using natural language instructions.
+
+## Supported LLM Providers
+
+| Provider | Models | Vision Support |
+|----------|--------|----------------|
+| **Anthropic** | Claude Sonnet, Opus, Haiku | ✓ |
+| **OpenAI** | GPT-4o, GPT-4 Turbo | ✓ |
+| **Ollama** | LLaVA, Moondream, etc. | ✓ (with vision models) |
 
 ## How It Works
 
@@ -8,20 +16,16 @@ An AI-powered browser automation agent that uses Claude's vision capabilities to
 ┌─────────────────────────────────────────────────────────┐
 │                      Agent Loop                         │
 ├─────────────────────────────────────────────────────────┤
-│  1. Screenshot page ──► 2. Send to Claude with task     │
+│  1. Screenshot page ──► 2. Send to LLM with task        │
 │          ▲                        │                     │
 │          │                        ▼                     │
-│  4. Execute action ◄── 3. Claude returns action JSON    │
+│  4. Execute action ◄── 3. LLM returns action JSON       │
 │          │                                              │
 │          └──────── Repeat until "done" ─────────────────│
 └─────────────────────────────────────────────────────────┘
 ```
 
-The agent takes a screenshot of the current page, sends it to Claude along with your task description, and Claude decides what action to take next. This continues until the task is complete.
-
 ## Installation
-
-### From Source
 
 ```bash
 # Clone the repository
@@ -32,40 +36,44 @@ cd browser-automation
 python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Install in development mode
+# Install
 pip install -e .
 
-# Install Playwright browser
-playwright install chromium
-```
-
-### Quick Install
-
-```bash
-pip install -e git+https://github.com/lokeshd1/browser-automation.git#egg=browser-agent
+# Install browser
 playwright install chromium
 ```
 
 ## Configuration
 
-Copy `.env.example` to `.env` and configure your API credentials:
+Copy `.env.example` to `.env` and configure your preferred provider:
 
 ```bash
 cp .env.example .env
 ```
 
-### Option 1: Standard Anthropic API
+### Anthropic (Claude) - Default
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
-### Option 2: Enterprise Bedrock Endpoint
+### OpenAI (GPT-4)
 
 ```bash
-export ANTHROPIC_BEDROCK_BASE_URL="https://your-endpoint.com/v1"
-export ANTHROPIC_AUTH_TOKEN="your-token"
-export ANTHROPIC_DEFAULT_SONNET_MODEL="your-model-id"
+export OPENAI_API_KEY="sk-..."
+export OPENAI_MODEL="gpt-4o"  # Optional, defaults to gpt-4o
+```
+
+### Ollama (Local)
+
+```bash
+# Start Ollama with a vision model
+ollama pull llava
+ollama serve
+
+# Set environment (optional - these are defaults)
+export OLLAMA_BASE_URL="http://localhost:11434"
+export OLLAMA_MODEL="llava"
 ```
 
 ## Usage
@@ -73,77 +81,79 @@ export ANTHROPIC_DEFAULT_SONNET_MODEL="your-model-id"
 ### Command Line
 
 ```bash
-# Basic usage
-browser-agent "Search for Python tutorials on DuckDuckGo"
+# Auto-detect provider from environment
+browser-agent "Search for Python tutorials" --url https://duckduckgo.com
 
-# With starting URL
-browser-agent "Find the top story" --url https://news.ycombinator.com
+# Explicitly specify provider
+browser-agent "Find the top story" --provider openai --url https://news.ycombinator.com
+browser-agent "Take a screenshot" --provider ollama --model llava --url https://example.com
 
-# Headless mode (no browser window)
-browser-agent "Take a screenshot of the homepage" --url https://example.com --headless
-
-# Save screenshots
-browser-agent "Click the first article and screenshot it" --screenshot-dir ./shots
-
-# Custom viewport
-browser-agent "Check mobile layout" --url https://example.com --viewport 375x812
-
-# All options
+# With options
 browser-agent "Fill the contact form" \
   --url https://example.com/contact \
+  --provider anthropic \
+  --model claude-sonnet-4-20250514 \
   --max-steps 15 \
   --headless \
-  --screenshot-dir ./screenshots \
-  --viewport 1920x1080
+  --screenshot-dir ./shots
 ```
 
 ### Python API
 
-#### Simple Usage
-
 ```python
 from browser_agent import run_agent
 
+# Simple usage (auto-detects provider)
 result = run_agent(
-    task="Go to Hacker News and find the top story title",
+    task="Find the top story title",
     start_url="https://news.ycombinator.com"
 )
 
-print(result["success"])  # True/False
-print(result["result"])   # Task result summary
+# Specify provider
+result = run_agent(
+    task="Search for Python",
+    start_url="https://duckduckgo.com",
+    provider="openai",
+    model="gpt-4o"
+)
+
+# Using Ollama locally
+result = run_agent(
+    task="Take a screenshot",
+    start_url="https://example.com",
+    provider="ollama",
+    model="llava"
+)
 ```
 
-#### Advanced Usage
+### Advanced Usage
 
 ```python
-from browser_agent import BrowserAgent, Config
+from browser_agent import BrowserAgent, Config, get_provider
 
 # Custom configuration
-config = Config.from_env()
+config = Config.from_env(provider="anthropic")
 config.max_steps = 15
 config.headless = True
 config.screenshot_dir = "./screenshots"
-config.viewport_width = 1920
-config.viewport_height = 1080
 
-# Initialize agent
 agent = BrowserAgent(config)
-
-# Run task
 result = agent.run(
-    task="Fill the form with name 'John Doe' and submit",
-    start_url="https://example.com/form"
+    task="Fill out the registration form",
+    start_url="https://example.com/register"
 )
 
-# Access results
-print(f"Success: {result.success}")
-print(f"Result: {result.result}")
-print(f"Steps: {len(result.steps)}")
+# Or use a custom provider
+from browser_agent import OpenAIProvider
 
-# Inspect individual steps
-for step in result.steps:
-    print(f"  Action: {step['action']}")
-    print(f"  Result: {step['result']}")
+provider = OpenAIProvider(
+    api_key="sk-...",
+    model="gpt-4o",
+    base_url="https://your-custom-endpoint.com/v1"  # For Azure, etc.
+)
+
+config = Config.from_env()
+agent = BrowserAgent(config, provider=provider)
 ```
 
 ## Supported Actions
@@ -161,53 +171,75 @@ for step in result.steps:
 
 ## Examples
 
-See the `examples/` directory for complete examples:
-
-- `search_example.py` - Search and extract results
-- `news_example.py` - Navigate and take screenshots
-- `form_example.py` - Fill out forms
-- `simple_playwright.py` - Basic Playwright without AI
-
-Run an example:
+See the `examples/` directory:
 
 ```bash
 cd examples
 python search_example.py
+python news_example.py
+python form_example.py
 ```
 
 ## Project Structure
 
 ```
 browser-automation/
-├── src/
-│   └── browser_agent/
-│       ├── __init__.py      # Package exports
-│       ├── agent.py         # Main BrowserAgent class
-│       ├── actions.py       # Action definitions and execution
-│       ├── config.py        # Configuration management
-│       └── cli.py           # Command-line interface
+├── src/browser_agent/
+│   ├── __init__.py
+│   ├── agent.py           # Main BrowserAgent class
+│   ├── actions.py         # Browser action execution
+│   ├── config.py          # Configuration management
+│   ├── cli.py             # Command-line interface
+│   └── providers/         # LLM provider implementations
+│       ├── __init__.py
+│       ├── base.py        # Base provider class
+│       ├── anthropic.py   # Claude provider
+│       ├── openai.py      # GPT-4 provider
+│       └── ollama.py      # Ollama provider
 ├── examples/
-│   ├── search_example.py
-│   ├── news_example.py
-│   ├── form_example.py
-│   └── simple_playwright.py
-├── pyproject.toml           # Package configuration
-├── requirements.txt         # Dependencies
-├── .env.example             # Example environment config
+├── pyproject.toml
+├── .env.example
 └── README.md
+```
+
+## Adding Custom Providers
+
+You can add support for other LLM providers by extending `BaseLLMProvider`:
+
+```python
+from browser_agent.providers import BaseLLMProvider
+
+class MyProvider(BaseLLMProvider):
+    @property
+    def name(self) -> str:
+        return "my-provider"
+
+    @property
+    def supports_vision(self) -> bool:
+        return True
+
+    def ask(self, system_prompt, messages, screenshot_b64, max_tokens=1024):
+        # Implement your API call here
+        return "{'action': 'done', 'result': 'Task completed'}"
+
+# Use it
+from browser_agent import BrowserAgent, Config
+
+config = Config.from_env()
+agent = BrowserAgent(config, provider=MyProvider())
 ```
 
 ## Limitations
 
 - Cannot solve CAPTCHAs
-- Cannot handle 2FA/MFA authentication flows
+- Cannot handle 2FA/MFA authentication
 - Some sites have bot detection that may block automation
-- File uploads require the file to exist locally
+- Non-vision models have limited effectiveness
 
 ## Requirements
 
 - Python 3.8+
-- Anthropic API key or enterprise Bedrock endpoint
+- API key for your chosen provider (or Ollama running locally)
 - Chromium browser (installed via Playwright)
 
 ## License

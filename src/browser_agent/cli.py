@@ -12,14 +12,31 @@ from .config import Config
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
-        description="AI-powered browser automation using Claude",
+        description="AI-powered browser automation using LLMs",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # Using Claude (default)
   browser-agent "Search for Python tutorials on DuckDuckGo"
-  browser-agent "Find the top story" --url https://news.ycombinator.com
-  browser-agent "Fill the form with name John" --url https://example.com --headless
-  browser-agent "Take a screenshot" --screenshot-dir ./shots
+
+  # Using OpenAI GPT-4
+  browser-agent "Find the top story" --provider openai --url https://news.ycombinator.com
+
+  # Using local Ollama
+  browser-agent "Take a screenshot" --provider ollama --model llava
+
+  # With all options
+  browser-agent "Fill the form with name John" \\
+    --url https://example.com \\
+    --provider anthropic \\
+    --model claude-sonnet-4-20250514 \\
+    --headless \\
+    --screenshot-dir ./shots
+
+Supported Providers:
+  anthropic   Claude models (default) - requires ANTHROPIC_API_KEY
+  openai      GPT-4 models - requires OPENAI_API_KEY
+  ollama      Local models - requires Ollama running locally
         """,
     )
 
@@ -35,7 +52,23 @@ Examples:
     )
 
     parser.add_argument(
-        "--max-steps", "-m",
+        "--provider", "-p",
+        choices=["anthropic", "openai", "ollama"],
+        help="LLM provider (default: auto-detect from environment)",
+    )
+
+    parser.add_argument(
+        "--model", "-m",
+        help="Model name (provider-specific)",
+    )
+
+    parser.add_argument(
+        "--api-key",
+        help="API key (overrides environment variable)",
+    )
+
+    parser.add_argument(
+        "--max-steps",
         type=int,
         default=10,
         help="Maximum number of actions (default: 10)",
@@ -82,7 +115,7 @@ Examples:
 
     # Build configuration
     try:
-        config = Config.from_env()
+        config = Config.from_env(provider=args.provider)
     except ValueError as e:
         print(f"Error: {e}")
         sys.exit(1)
@@ -91,6 +124,11 @@ Examples:
     config.headless = args.headless
     config.screenshot_dir = args.screenshot_dir
     config.verbose = not args.quiet
+
+    if args.model:
+        config.model = args.model
+    if args.api_key:
+        config.api_key = args.api_key
 
     if args.viewport:
         try:

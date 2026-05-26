@@ -9,12 +9,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-import anthropic
-import httpx
 from playwright.sync_api import sync_playwright
 
 from .actions import SYSTEM_PROMPT, execute_action, get_page_context
 from .config import Config
+from .providers import get_provider, BaseLLMProvider
 
 
 @dataclass
@@ -28,88 +27,59 @@ class AgentResult:
 
 
 class BrowserAgent:
-    """AI-powered browser automation agent using Claude."""
+    """AI-powered browser automation agent."""
 
-    def __init__(self, config: Optional[Config] = None):
+    def __init__(
+        self,
+        config: Optional[Config] = None,
+        provider: Optional[BaseLLMProvider] = None,
+    ):
         """
         Initialize the browser agent.
 
         Args:
             config: Configuration object. If None, loads from environment.
+            provider: LLM provider instance. If None, creates from config.
         """
         self.config = config or Config.from_env()
         self.config.validate()
 
-        # Initialize API client for non-enterprise mode
-        if not self.config.use_enterprise:
-            self._client = anthropic.Anthropic()
+        # Initialize provider
+        if provider:
+            self._provider = provider
         else:
-            self._client = None
+            self._provider = get_provider(
+                self.config.provider,
+                **self.config.get_provider_kwargs()
+            )
 
         if self.config.verbose:
-            if self.config.use_enterprise:
-                print(f"Using enterprise endpoint: {self.config.base_url}")
-            else:
-                print("Using standard Anthropic API")
+            print(f"Using provider: {self._provider.name} (model: {self.config.model})")
+            if not self._provider.supports_vision:
+                print("Warning: This model doesn't support vision. Results may be limited.")
 
     def _screenshot_to_base64(self, page: Any) -> str:
         """Capture screenshot and convert to base64."""
         screenshot_bytes = page.screenshot()
         return base64.standard_b64encode(screenshot_bytes).decode("utf-8")
 
-    def _ask_claude(
+    def _ask_llm(
         self, task: str, screenshot_b64: str, page_context: dict, history: list
     ) -> dict:
-        """Ask Claude what action to take next."""
-        messages = history + [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": f"Task: {task}\n\nCurrent page context:\n{json.dumps(page_context, indent=2)}\n\nWhat action should I take next?",
-                    },
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/png",
-                            "data": screenshot_b64,
-                        },
-                    },
-                ],
-            }
-        ]
+        """Ask the LLM what action to take next."""
+        # Build context message
+        context_msg = f"Task: {task}\n\nCurrent page context:\n{json.dumps(page_context, indent=2)}"
 
-        if self.config.use_enterprise:
-            # Use httpx directly for enterprise endpoint
-            response = httpx.post(
-                f"{self.config.base_url}/messages",
-                headers={
-                    "Authorization": f"Bearer {self.config.auth_token}",
-                    "Content-Type": "application/json",
-                    "anthropic-version": "2023-06-01",
-                },
-                json={
-                    "model": self.config.model,
-                    "max_tokens": 1024,
-                    "system": SYSTEM_PROMPT,
-                    "messages": messages,
-                },
-                timeout=60.0,
-            )
-            response.raise_for_status()
-            data = response.json()
-            response_text = data["content"][0]["text"]
-        else:
-            # Use anthropic library for standard API
-            response = self._client.messages.create(
-                model=self.config.model,
-                max_tokens=1024,
-                system=SYSTEM_PROMPT,
-                messages=messages,
-            )
-            response_text = response.content[0].text
+        # Add context to history
+        messages = history + [{"role": "user", "content": context_msg}]
+
+        # Get response from provider
+        response_text = self._provider.ask(
+            system_prompt=SYSTEM_PROMPT,
+            messages=messages,
+            screenshot_b64=screenshot_b64,
+            max_tokens=1024,
+        )
 
         # Parse JSON from response
         try:
@@ -186,11 +156,11 @@ class BrowserAgent:
                     if self.config.verbose:
                         print(f"URL: {page_context['url']}")
 
-                    # Ask Claude what to do
-                    action = self._ask_claude(task, screenshot_b64, page_context, history)
+                    # Ask LLM what to do
+                    action = self._ask_llm(task, screenshot_b64, page_context, history)
 
                     if self.config.verbose:
-                        print(f"Claude decided: {json.dumps(action)}")
+                        print(f"LLM decided: {json.dumps(action)}")
 
                     # Execute the action
                     result = execute_action(
@@ -239,6 +209,9 @@ def run_agent(
     screenshot_dir: Optional[str] = None,
     viewport: Optional[dict] = None,
     verbose: bool = True,
+    provider: str = None,
+    model: str = None,
+    api_key: str = None,
 ) -> dict:
     """
     Convenience function to run the browser agent.
@@ -251,15 +224,23 @@ def run_agent(
         screenshot_dir: Directory to save screenshots
         viewport: Browser viewport size {"width": int, "height": int}
         verbose: Print progress to stdout
+        provider: LLM provider ('anthropic', 'openai', 'ollama')
+        model: Model name (provider-specific)
+        api_key: API key (overrides environment)
 
     Returns:
         Dictionary with 'success', 'result', 'steps', and optionally 'error'
     """
-    config = Config.from_env()
+    config = Config.from_env(provider=provider)
     config.max_steps = max_steps
     config.headless = headless
     config.screenshot_dir = screenshot_dir
     config.verbose = verbose
+
+    if model:
+        config.model = model
+    if api_key:
+        config.api_key = api_key
 
     if viewport:
         config.viewport_width = viewport.get("width", 1280)
