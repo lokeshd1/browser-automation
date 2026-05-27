@@ -33,6 +33,22 @@ class Config:
     # Vision Configuration
     use_vision: bool = True  # Set to False to use DOM context only (works with any LLM)
 
+    # Retry Configuration
+    action_max_retries: int = 3
+    llm_max_retries: int = 2
+    retry_base_delay_ms: int = 500
+
+    # Smart Waiting Configuration
+    smart_wait_enabled: bool = True
+    smart_wait_timeout_ms: int = 10000
+    dom_stability_ms: int = 300
+
+    # Session Configuration
+    save_session: bool = False
+    load_session: bool = False
+    session_file: Optional[str] = None
+    session_ttl_hours: int = 24
+
     # Output Configuration
     screenshot_dir: Optional[str] = None
     verbose: bool = True

@@ -31,6 +31,17 @@ Examples:
   # Non-vision mode with text-only Ollama model
   browser-agent "Fill the search form" --provider ollama --model llama3 --no-vision
 
+  # With retry and session persistence
+  browser-agent "Login and save credentials" \\
+    --url https://example.com/login \\
+    --max-retries 5 \\
+    --save-session
+
+  # Resume with saved session
+  browser-agent "Go to dashboard" \\
+    --url https://example.com \\
+    --load-session
+
   # With all options
   browser-agent "Fill the form with name John" \\
     --url https://example.com \\
@@ -108,6 +119,38 @@ Supported Providers:
         help="Disable vision mode, use DOM context only (works with any LLM, reduces cost)",
     )
 
+    # Reliability options
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=3,
+        help="Max retries for failed actions (default: 3)",
+    )
+
+    parser.add_argument(
+        "--no-smart-wait",
+        action="store_true",
+        help="Disable adaptive waiting, use fixed delay",
+    )
+
+    # Session options
+    parser.add_argument(
+        "--save-session",
+        action="store_true",
+        help="Save browser session on successful completion",
+    )
+
+    parser.add_argument(
+        "--load-session",
+        action="store_true",
+        help="Load browser session from file if available",
+    )
+
+    parser.add_argument(
+        "--session-file",
+        help="Path to session file (default: .browser_agent_session.json)",
+    )
+
     parser.add_argument(
         "--version", "-v",
         action="store_true",
@@ -139,6 +182,16 @@ Supported Providers:
 
     if args.no_vision:
         config.use_vision = False
+
+    # Reliability settings
+    config.action_max_retries = args.max_retries
+    config.smart_wait_enabled = not args.no_smart_wait
+
+    # Session settings
+    config.save_session = args.save_session
+    config.load_session = args.load_session
+    if args.session_file:
+        config.session_file = args.session_file
 
     if args.model:
         config.model = args.model

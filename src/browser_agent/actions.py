@@ -3,7 +3,14 @@ Browser action definitions and execution.
 """
 
 import os
-from typing import Any
+from typing import Any, Callable, Optional
+
+from .utils import (
+    RetryConfig,
+    is_transient_error,
+    retry_action,
+    try_with_fallback_selectors,
+)
 
 # System prompt with all available actions
 SYSTEM_PROMPT = """You are a browser automation agent. You can see screenshots of a webpage and decide what action to take next.
@@ -137,7 +144,25 @@ Tips for building selectors from context:
 """
 
 
-def execute_action(page: Any, action: dict, screenshot_dir: str = None, timeout: int = 5000) -> str:
+# Actions that should not be retried
+NO_RETRY_ACTIONS = {"done", "screenshot", "sleep"}
+
+# Actions that use selectors (can benefit from fallback selectors)
+SELECTOR_ACTIONS = {
+    "click", "double_click", "right_click", "hover",
+    "fill", "clear", "select", "check", "uncheck", "upload",
+    "scroll_to", "extract", "get_attribute", "get_text",
+    "wait", "wait_hidden", "focus"
+}
+
+
+def execute_action(
+    page: Any,
+    action: dict,
+    screenshot_dir: str = None,
+    timeout: int = 5000,
+    page_context: Optional[dict] = None,
+) -> str:
     """
     Execute a browser action.
 
@@ -146,6 +171,7 @@ def execute_action(page: Any, action: dict, screenshot_dir: str = None, timeout:
         action: Action dictionary from Claude
         screenshot_dir: Directory to save screenshots
         timeout: Default timeout for actions in ms
+        page_context: Optional page context for fallback selector generation
 
     Returns:
         Result message string
@@ -155,7 +181,7 @@ def execute_action(page: Any, action: dict, screenshot_dir: str = None, timeout:
     try:
         # NAVIGATION
         if action_type == "goto":
-            page.goto(action["url"], wait_until="domcontentloaded")
+            page.goto(action["url"], wait_until="load")
             return f"Navigated to: {action['url']}"
 
         elif action_type == "back":
@@ -462,3 +488,66 @@ def get_page_context(page: Any) -> dict:
             }
         }
     }""")
+
+
+def execute_action_with_retry(
+    page: Any,
+    action: dict,
+    screenshot_dir: str = None,
+    timeout: int = 5000,
+    page_context: Optional[dict] = None,
+    retry_config: Optional[RetryConfig] = None,
+    on_retry: Optional[Callable[[int, Exception], None]] = None,
+) -> str:
+    """
+    Execute a browser action with retry logic.
+
+    Wraps execute_action with exponential backoff retry for transient errors.
+    Skips retry for non-retryable actions like done, screenshot, and sleep.
+
+    Args:
+        page: Playwright page object
+        action: Action dictionary from Claude
+        screenshot_dir: Directory to save screenshots
+        timeout: Default timeout for actions in ms
+        page_context: Optional page context for fallback selector generation
+        retry_config: Retry configuration (uses defaults if None)
+        on_retry: Optional callback called on each retry with (attempt, exception)
+
+    Returns:
+        Result message string
+    """
+    action_type = action.get("action")
+
+    # Skip retry for certain actions
+    if action_type in NO_RETRY_ACTIONS:
+        return execute_action(page, action, screenshot_dir, timeout, page_context)
+
+    # For selector-based actions, try with fallback selectors first
+    selector = action.get("selector")
+    if action_type in SELECTOR_ACTIONS and selector and page_context:
+        def try_action_with_selector(sel: str) -> str:
+            modified_action = {**action, "selector": sel}
+            return execute_action(page, modified_action, screenshot_dir, timeout, page_context)
+
+        try:
+            return try_with_fallback_selectors(
+                page,
+                try_action_with_selector,
+                selector,
+                page_context,
+                timeout,
+            )
+        except Exception as e:
+            # If fallback selectors also fail, try with retry logic
+            if not is_transient_error(e):
+                raise
+
+    # Apply retry logic
+    if retry_config is None:
+        retry_config = RetryConfig()
+
+    def do_action() -> str:
+        return execute_action(page, action, screenshot_dir, timeout, page_context)
+
+    return retry_action(do_action, retry_config, on_retry)

@@ -11,9 +11,23 @@ from typing import Any, Optional
 
 from playwright.sync_api import sync_playwright
 
-from .actions import SYSTEM_PROMPT, SYSTEM_PROMPT_NO_VISION, execute_action, get_page_context
+from .actions import (
+    SYSTEM_PROMPT,
+    SYSTEM_PROMPT_NO_VISION,
+    execute_action,
+    execute_action_with_retry,
+    get_page_context,
+)
 from .config import Config
 from .providers import get_provider, BaseLLMProvider
+from .session import SessionConfig, SessionManager
+from .utils import (
+    RetryConfig,
+    WaitConfig,
+    smart_wait_after_action,
+    retry_action,
+    is_transient_error,
+)
 
 
 @dataclass
@@ -53,6 +67,34 @@ class BrowserAgent:
                 **self.config.get_provider_kwargs()
             )
 
+        # Initialize session manager if session features enabled
+        self._session_manager = None
+        if self.config.save_session or self.config.load_session:
+            session_config = SessionConfig(
+                session_file=self.config.session_file or ".browser_agent_session.json",
+                session_ttl_hours=self.config.session_ttl_hours,
+            )
+            self._session_manager = SessionManager(session_config)
+
+        # Initialize retry config
+        self._retry_config = RetryConfig(
+            max_retries=self.config.action_max_retries,
+            base_delay_ms=self.config.retry_base_delay_ms,
+        )
+
+        # Initialize wait config
+        self._wait_config = WaitConfig(
+            networkidle_timeout_ms=self.config.smart_wait_timeout_ms,
+            dom_stability_ms=self.config.dom_stability_ms,
+        )
+
+        # Initialize LLM retry config (for API resilience)
+        self._llm_retry_config = RetryConfig(
+            max_retries=self.config.llm_max_retries,
+            base_delay_ms=1000,  # Longer delay for API retries
+            max_delay_ms=10000,
+        )
+
         if self.config.verbose:
             print(f"Using provider: {self._provider.name} (model: {self.config.model})")
             if self.config.use_vision:
@@ -60,6 +102,11 @@ class BrowserAgent:
                     print("Warning: This model doesn't support vision. Results may be limited.")
             else:
                 print("Vision disabled: using DOM context only")
+            if self._session_manager:
+                if self.config.load_session:
+                    print("Session loading enabled")
+                if self.config.save_session:
+                    print("Session saving enabled")
 
     def _screenshot_to_base64(self, page: Any) -> str:
         """Capture screenshot and convert to base64."""
@@ -69,7 +116,7 @@ class BrowserAgent:
     def _ask_llm(
         self, task: str, screenshot_b64: str, page_context: dict, history: list
     ) -> dict:
-        """Ask the LLM what action to take next."""
+        """Ask the LLM what action to take next with retry logic for API resilience."""
         # Build context message
         context_msg = f"Task: {task}\n\nCurrent page context:\n{json.dumps(page_context, indent=2)}"
 
@@ -79,14 +126,32 @@ class BrowserAgent:
         # Choose system prompt based on vision mode
         system_prompt = SYSTEM_PROMPT if self.config.use_vision else SYSTEM_PROMPT_NO_VISION
 
-        # Get response from provider
-        response_text = self._provider.ask(
-            system_prompt=system_prompt,
-            messages=messages,
-            screenshot_b64=screenshot_b64,
-            max_tokens=1024,
-            use_vision=self.config.use_vision,
-        )
+        def make_llm_request() -> str:
+            return self._provider.ask(
+                system_prompt=system_prompt,
+                messages=messages,
+                screenshot_b64=screenshot_b64,
+                max_tokens=1024,
+                use_vision=self.config.use_vision,
+            )
+
+        def on_llm_retry(attempt: int, error: Exception) -> None:
+            if self.config.verbose:
+                print(f"  LLM request failed (attempt {attempt}): {error}")
+
+        # Retry LLM requests for resilience against 429, 503, etc.
+        try:
+            response_text = retry_action(
+                make_llm_request,
+                self._llm_retry_config,
+                on_llm_retry,
+            )
+        except Exception as e:
+            # If all retries fail, return a done action with error
+            return {
+                "action": "done",
+                "result": f"LLM request failed after retries: {str(e)}",
+            }
 
         # Parse JSON from response
         try:
@@ -130,10 +195,28 @@ class BrowserAgent:
 
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=self.config.headless)
-            page = browser.new_page(viewport=self.config.viewport)
+
+            # Create context with session recovery if enabled
+            if self._session_manager and self.config.load_session:
+                context = self._session_manager.create_context_with_session(
+                    browser,
+                    self.config.viewport,
+                    self.config.session_file,
+                )
+                if self.config.verbose:
+                    session_info = self._session_manager.get_session_info(self.config.session_file)
+                    if session_info:
+                        print(f"Restored session: {session_info['cookie_count']} cookies, {session_info['remaining_hours']:.1f}h remaining")
+            else:
+                context = browser.new_context(viewport=self.config.viewport)
+
+            page = context.new_page()
 
             if start_url:
-                page.goto(start_url, wait_until="domcontentloaded")
+                page.goto(start_url, wait_until="load")
+                # Use smart wait after initial navigation
+                if self.config.smart_wait_enabled:
+                    smart_wait_after_action(page, "goto", self._wait_config)
 
             history = []
 
@@ -142,11 +225,12 @@ class BrowserAgent:
                     if self.config.verbose:
                         print(f"--- Step {step + 1} ---")
 
-                    # Give page time to settle
-                    try:
-                        page.wait_for_timeout(self.config.step_delay_ms)
-                    except Exception:
-                        pass
+                    # Use smart wait or fixed delay based on config
+                    if not self.config.smart_wait_enabled:
+                        try:
+                            page.wait_for_timeout(self.config.step_delay_ms)
+                        except Exception:
+                            pass
 
                     # Check if page is still valid
                     try:
@@ -170,13 +254,26 @@ class BrowserAgent:
                     if self.config.verbose:
                         print(f"LLM decided: {json.dumps(action)}")
 
-                    # Execute the action
-                    result = execute_action(
+                    # Retry callback for verbose logging
+                    def on_action_retry(attempt: int, error: Exception) -> None:
+                        if self.config.verbose:
+                            print(f"  Retrying action (attempt {attempt}): {error}")
+
+                    # Execute the action with retry and fallback selectors
+                    result = execute_action_with_retry(
                         page,
                         action,
                         self.config.screenshot_dir,
                         self.config.action_timeout_ms,
+                        page_context,
+                        self._retry_config,
+                        on_action_retry,
                     )
+
+                    # Smart wait after action if enabled
+                    action_type = action.get("action", "")
+                    if self.config.smart_wait_enabled:
+                        smart_wait_after_action(page, action_type, self._wait_config)
 
                     if self.config.verbose:
                         print(f"Result: {result}\n")
@@ -201,7 +298,14 @@ class BrowserAgent:
                     print(f"Agent error: {e}")
                 result_data.error = str(e)
             finally:
+                # Save session if enabled and task succeeded
+                if self._session_manager and self.config.save_session and result_data.success:
+                    if self._session_manager.save_session(context, self.config.session_file):
+                        if self.config.verbose:
+                            print("Session saved successfully")
+
                 try:
+                    context.close()
                     browser.close()
                 except Exception:
                     pass
@@ -221,6 +325,11 @@ def run_agent(
     model: str = None,
     api_key: str = None,
     use_vision: bool = True,
+    max_retries: int = 3,
+    smart_wait: bool = True,
+    save_session: bool = False,
+    load_session: bool = False,
+    session_file: str = None,
 ) -> dict:
     """
     Convenience function to run the browser agent.
@@ -237,6 +346,11 @@ def run_agent(
         model: Model name (provider-specific)
         api_key: API key (overrides environment)
         use_vision: Whether to use vision mode (default: True). Set to False for DOM-only mode.
+        max_retries: Maximum retry attempts for failed actions (default: 3)
+        smart_wait: Use adaptive waiting instead of fixed delay (default: True)
+        save_session: Save browser session on successful completion (default: False)
+        load_session: Load browser session from file if available (default: False)
+        session_file: Path to session file (default: .browser_agent_session.json)
 
     Returns:
         Dictionary with 'success', 'result', 'steps', and optionally 'error'
@@ -247,6 +361,16 @@ def run_agent(
     config.screenshot_dir = screenshot_dir
     config.verbose = verbose
     config.use_vision = use_vision
+
+    # Reliability settings
+    config.action_max_retries = max_retries
+    config.smart_wait_enabled = smart_wait
+
+    # Session settings
+    config.save_session = save_session
+    config.load_session = load_session
+    if session_file:
+        config.session_file = session_file
 
     if model:
         config.model = model
